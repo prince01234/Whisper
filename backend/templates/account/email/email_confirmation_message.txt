@@ -1,0 +1,10 @@
+Hello from Whisper!
+
+You're receiving this email because user {{ user.username }} has given your email address to register an account on {{ site_domain }}.
+
+To confirm this is correct, please go to:
+{{ activate_url }}
+
+Thank you for using Whisper!
+The Whisper Team
+{{ site_domain }}
