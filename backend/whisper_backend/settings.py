@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'allauth.account',
     'allauth.socialaccount',
     'corsheaders',
+    'channels',  
 
     # Custom apps
     'authentication',
@@ -100,8 +101,22 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'whisper_backend.wsgi.application'
+# Change from WSGI to ASGI for Channels
+ASGI_APPLICATION = 'whisper_backend.asgi.application'
 
+# Channels configuration
+CHANNEL_LAYERS = {
+    'default': {
+        # Use the in-memory layer for development
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        
+        # For production, use Redis backend (requires channels_redis):
+        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        # 'CONFIG': {
+        #     "hosts": [('127.0.0.1', 6379)],
+        # },
+    },
+}
 
 # For email HTML templates
 ACCOUNT_EMAIL_CONFIRMATION_HMAC = True
@@ -274,6 +289,11 @@ LOGGING = {
             'propagate': False,
         },
         'django.request': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'channels': {  # Add Channels logging
             'handlers': ['console', 'file'],
             'level': 'DEBUG',
             'propagate': False,
