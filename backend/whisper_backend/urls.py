@@ -70,6 +70,9 @@ urlpatterns = [
 
     #for profiles
     path('api/', include('profiles.urls')),
+
+    #for chat
+    path('api/chat/', include('chat.urls')),
     ]
 
 
