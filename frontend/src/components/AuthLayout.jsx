@@ -22,15 +22,23 @@ const AuthLayout = () => {
     try {
       if (view === "login") {
         await login(email, password); 
+        // No need to do anything else - the App component will handle the redirect
       } else if (view === "signup") {
         if (password !== confirmPassword) {
           setError("Passwords do not match");
           setLoading(false);
           return;
         }
+        
+        // Register the user - this will:
+        // 1. Call the API to create the account
+        // 2. Set the authentication token
+        // 3. Set the needsProfileSetup flag through the useAuth hook
+        // 4. App.jsx will handle redirecting to the profile setup page
         await register(name, email, password, confirmPassword); 
-        setSuccessMessage("Account created successfully! You can check your email to verify account.");
-        setView("login"); 
+        
+        // Don't set view back to login or show success message
+        // The user will be automatically redirected to profile setup
       } else if (view === "forgot-password") {
         // If resetPassword is implemented, use it here
         if (typeof resetPassword === 'function') {

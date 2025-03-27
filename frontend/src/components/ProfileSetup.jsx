@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { 
-  User, Calendar, Phone, FileText, CheckCircle, AlertTriangle, X, Image
+  User, Calendar, Phone, FileText, Image
 } from 'lucide-react';
-import axios from 'axios';
+import { updateProfile, getAuthToken } from '../utils/api';
+import AlertMessage from './AlertMessage';
 
 const ProfileSetup = ({ onSkip, onComplete }) => {
   const [profile, setProfile] = useState({
@@ -15,6 +16,7 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
   
   const [previewUrl, setPreviewUrl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
   const [alert, setAlert] = useState({ show: false, type: '', message: '' });
   
   const handleInputChange = (e) => {
@@ -28,6 +30,15 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
   const handleProfilePictureChange = (e) => {
     const file = e.target.files[0];
     if (file) {
+      setImageLoading(true);
+      
+      // File size validation (optional)
+      if (file.size > 5 * 1024 * 1024) { // 5MB limit
+        showAlert('error', 'Profile picture must be less than 5MB');
+        setImageLoading(false);
+        return;
+      }
+      
       setProfile({
         ...profile,
         profilePicture: file
@@ -37,40 +48,94 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreviewUrl(reader.result);
+        setImageLoading(false);
+      };
+      reader.onerror = () => {
+        showAlert('error', 'Failed to load image preview');
+        setImageLoading(false);
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const validateForm = () => {
+    // Required fields validation
+    if (!profile.fullName.trim()) {
+      showAlert('error', 'Full name is required');
+      return false;
+    }
+    
+    // Phone number format validation (optional)
+    if (profile.phoneNumber && !/^[+]?[(]?[0-9]{3}[)]?[-\s.]?[0-9]{3}[-\s.]?[0-9]{4,6}$/im.test(profile.phoneNumber)) {
+      showAlert('error', 'Please enter a valid phone number');
+      return false;
+    }
+    
+    return true;
   };
   
   const saveProfile = async (e) => {
     e.preventDefault();
     setIsLoading(true);
     
+    // Check if user is online
+    if (!navigator.onLine) {
+      showAlert('error', 'You appear to be offline. Please check your internet connection.');
+      setIsLoading(false);
+      return;
+    }
+
+    // Validate form
+    if (!validateForm()) {
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      const token = localStorage.getItem('token');
+      const token = getAuthToken();
+      
+      if (!token) {
+        showAlert('error', 'No authentication token found. Please log in again.');
+        setIsLoading(false);
+        return;
+      }
       
       // Create form data
       const formData = new FormData();
-      formData.append('full_name', profile.fullName);
-      formData.append('phone_number', profile.phoneNumber || '');
-      formData.append('bio', profile.bio || '');
-      formData.append('birthday', profile.birthday || '');
       
+      formData.append('full_name', profile.fullName.trim());
+      
+      // Optional fields - only add if they have values
+      if (profile.phoneNumber) formData.append('phone_number', profile.phoneNumber);
+      if (profile.bio) formData.append('bio', profile.bio);
+      if (profile.birthday) formData.append('birthday', profile.birthday);
+      
+      // Profile picture
       if (profile.profilePicture) {
         formData.append('profile_picture', profile.profilePicture);
       }
       
-      console.log('Saving initial profile data...');
+      // For debugging - log what we're sending
+      console.log('Saving profile with data:');
+      for (let [key, value] of formData.entries()) {
+        console.log(`${key}: ${value instanceof File ? value.name : value}`);
+      }
       
-      const response = await axios.patch('/api/profile/', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          'Authorization': `Token ${token}`
-        }
-      });
+      // Use the updateProfile utility function
+      const response = await updateProfile(formData);
       
       console.log('Profile saved successfully:', response.data);
       showAlert('success', 'Profile updated successfully!');
+      
+      // Reset form
+      setProfile({
+        fullName: '',
+        phoneNumber: '',
+        bio: '',
+        birthday: '',
+        profilePicture: null
+      });
+      setPreviewUrl(null);
       
       // After a short delay, call the onComplete function to proceed
       setTimeout(() => {
@@ -79,7 +144,39 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
       
     } catch (error) {
       console.error('Error saving profile:', error);
-      showAlert('error', 'Failed to save profile. Please try again.');
+      
+      // More detailed error handling
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        console.error('Error response:', error.response.data);
+        
+        if (error.response.status === 401) {
+          showAlert('error', 'Authentication failed. Please log in again.');
+        } else if (error.response.data.detail) {
+          showAlert('error', error.response.data.detail);
+        } else if (typeof error.response.data === 'object') {
+          // Format field errors
+          const errorMessages = [];
+          Object.entries(error.response.data).forEach(([field, errors]) => {
+            if (Array.isArray(errors)) {
+              errorMessages.push(`${field}: ${errors.join(', ')}`);
+            } else {
+              errorMessages.push(`${field}: ${errors}`);
+            }
+          });
+          showAlert('error', errorMessages.join('; '));
+        } else {
+          showAlert('error', `Server error: ${error.response.status}`);
+        }
+      } else if (error.request) {
+        // The request was made but no response was received
+        console.error('No response received:', error.request);
+        showAlert('error', 'No response from server. Please check your connection.');
+      } else {
+        // Something happened in setting up the request that triggered an Error
+        showAlert('error', `Error: ${error.message}`);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -88,32 +185,21 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
   const showAlert = (type, message) => {
     setAlert({ show: true, type, message });
     
-    // Auto hide alert after 3 seconds
+    // Auto hide alert after 5 seconds (increased from 3)
     setTimeout(() => {
       setAlert({ show: false, type: '', message: '' });
-    }, 3000);
+    }, 5000);
   };
   
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       {/* Alert banner */}
-      {alert.show && (
-        <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg flex items-center space-x-3 ${
-          alert.type === 'success' 
-            ? 'bg-green-100 text-green-800 border border-green-200' 
-            : 'bg-red-100 text-red-800 border border-red-200'
-        }`}>
-          {alert.type === 'success' ? (
-            <CheckCircle className="w-5 h-5" />
-          ) : (
-            <AlertTriangle className="w-5 h-5" />
-          )}
-          <p>{alert.message}</p>
-          <button onClick={() => setAlert({ show: false, type: '', message: '' })} className="ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      <AlertMessage 
+        show={alert.show}
+        type={alert.type}
+        message={alert.message}
+        onClose={() => setAlert({ show: false, type: '', message: '' })}
+      />
       
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-white">
@@ -130,7 +216,14 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
             {/* Profile Picture */}
             <div className="flex flex-col items-center mb-6">
               <div className="relative w-32 h-32 rounded-full overflow-hidden border-4 border-gray-200 dark:border-gray-600 mb-4">
-                {previewUrl ? (
+                {imageLoading ? (
+                  <div className="w-full h-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center">
+                    <svg className="animate-spin h-10 w-10 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                ) : previewUrl ? (
                   <img 
                     src={previewUrl} 
                     alt="Profile Preview" 
@@ -150,6 +243,7 @@ const ProfileSetup = ({ onSkip, onComplete }) => {
                     className="hidden"
                     accept="image/*"
                     onChange={handleProfilePictureChange}
+                    disabled={imageLoading}
                   />
                 </label>
               </div>

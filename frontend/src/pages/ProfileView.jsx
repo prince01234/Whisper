@@ -3,9 +3,10 @@ import {
   User, Mail, Phone, FileText, Edit2, Camera, CheckCircle, X, AlertTriangle, 
   MapPin, Calendar, Clock, MessageSquare, Hash, AtSign
 } from 'lucide-react';
-import axios from 'axios';
+import { fetchProfile, updateProfile, getAuthToken } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import { TagInput } from '../components/TagInput';
+import AlertMessage from '../components/AlertMessage';
 
 const ProfileView = () => {
   // State for user profile data
@@ -58,13 +59,14 @@ const ProfileView = () => {
   const fetchUserProfile = useCallback(async () => {
     console.log('Fetching user profile...');
     setIsLoading(true);
+    
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/profile/', {
-        headers: {
-          Authorization: `Token ${token}`
-        }
-      });
+      if (!getAuthToken()) {
+        throw new Error('Authentication token not found. Please log in again.');
+      }
+      
+      // Use the fetchProfile utility function from api.js
+      const response = await fetchProfile();
       
       console.log('Profile data received:', response.data);
       
@@ -97,10 +99,22 @@ const ProfileView = () => {
         timeZone: response.data.time_zone || ''
       });
       
-      setIsLoading(false);
     } catch (error) {
       console.error('Error fetching profile:', error);
-      showAlert('error', 'Failed to load profile. Please try again.');
+      
+      // Improved error handling
+      if (error.response) {
+        if (error.response.status === 401) {
+          showAlert('error', 'Your session has expired. Please log in again.');
+        } else {
+          showAlert('error', `Failed to load profile: ${error.response.data.detail || 'Server error'}`);
+        }
+      } else if (error.request) {
+        showAlert('error', 'Network error. Please check your connection.');
+      } else {
+        showAlert('error', error.message || 'Failed to load profile');
+      }
+    } finally {
       setIsLoading(false);
     }
   }, []); // Empty dependency array because it doesn't depend on any props or state
@@ -136,6 +150,12 @@ const ProfileView = () => {
   const handleProfilePictureChange = (e) => {
     const file = e.target.files[0];
     if (file) {
+      // File size validation (5MB max)
+      if (file.size > 5 * 1024 * 1024) {
+        showAlert('error', 'Profile picture must be less than 5MB');
+        return;
+      }
+      
       setNewProfilePicture(file);
       
       // Create preview URL
@@ -164,42 +184,78 @@ const ProfileView = () => {
     });
   };
   
+  // Validate profile data
+  const validateProfile = () => {
+    if (!editedProfile.fullName.trim()) {
+      showAlert('error', 'Full name is required');
+      return false;
+    }
+    
+    // Add more validations if needed
+    // For example, email format, phone number format, etc.
+    
+    return true;
+  };
+  
   // Save profile changes
   const saveProfile = async () => {
     console.log('Saving profile changes...');
     console.log('Data to save:', editedProfile);
     
+    // Check for network connection
+    if (!navigator.onLine) {
+      showAlert('error', 'You appear to be offline. Please check your internet connection.');
+      return;
+    }
+    
+    // Validate profile data
+    if (!validateProfile()) {
+      return;
+    }
+    
     setIsLoading(true);
     
     try {
-      const token = localStorage.getItem('token');
+      if (!getAuthToken()) {
+        throw new Error('Authentication token not found. Please log in again.');
+      }
       
       // Create form data for file upload
       const formData = new FormData();
-      formData.append('full_name', editedProfile.fullName);
-      formData.append('phone_number', editedProfile.phoneNumber);
-      formData.append('bio', editedProfile.bio);
       
-      // Add new fields
-      formData.append('username', editedProfile.username);
-      formData.append('alternative_email', editedProfile.alternativeEmail);
-      formData.append('location', editedProfile.location);
-      formData.append('birthday', editedProfile.birthday);
-      formData.append('status_message', editedProfile.statusMessage);
-      formData.append('interests', JSON.stringify(editedProfile.interests));
-      formData.append('time_zone', editedProfile.timeZone);
+      // Add all fields to FormData
+      formData.append('full_name', editedProfile.fullName.trim());
       
+      // Optional fields - only add if they exist
+      if (editedProfile.phoneNumber) formData.append('phone_number', editedProfile.phoneNumber);
+      if (editedProfile.bio) formData.append('bio', editedProfile.bio);
+      if (editedProfile.username) formData.append('username', editedProfile.username);
+      if (editedProfile.alternativeEmail) formData.append('alternative_email', editedProfile.alternativeEmail);
+      if (editedProfile.location) formData.append('location', editedProfile.location);
+      if (editedProfile.birthday) formData.append('birthday', editedProfile.birthday);
+      if (editedProfile.statusMessage) formData.append('status_message', editedProfile.statusMessage);
+      if (editedProfile.timeZone) formData.append('time_zone', editedProfile.timeZone);
+      
+      // Handle interests array - convert to JSON string
+      if (Array.isArray(editedProfile.interests) && editedProfile.interests.length > 0) {
+        formData.append('interests', JSON.stringify(editedProfile.interests));
+      } else {
+        formData.append('interests', JSON.stringify([]));
+      }
+      
+      // Add profile picture if selected
       if (newProfilePicture) {
         formData.append('profile_picture', newProfilePicture);
       }
       
-      console.log('Sending update request...');
-      const response = await axios.patch('/api/profile/', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          'Authorization': `Token ${token}`
-        }
-      });
+      // Debug log what we're sending
+      console.log('Sending update request with form data:');
+      for (let [key, value] of formData.entries()) {
+        console.log(`${key}: ${value instanceof File ? `File: ${value.name} (${value.size} bytes)` : value}`);
+      }
+      
+      // Use the updateProfile utility function from api.js
+      const response = await updateProfile(formData);
       
       console.log('Profile updated successfully:', response.data);
       
@@ -223,7 +279,38 @@ const ProfileView = () => {
       showAlert('success', 'Profile updated successfully');
     } catch (error) {
       console.error('Error updating profile:', error);
-      showAlert('error', 'Failed to update profile. Please try again.');
+      
+      // Enhanced error handling
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        console.error('Error response data:', error.response.data);
+        
+        if (error.response.status === 401) {
+          showAlert('error', 'Authentication failed. Please log in again.');
+        } else if (error.response.data.detail) {
+          showAlert('error', error.response.data.detail);
+        } else if (typeof error.response.data === 'object') {
+          // Format field errors
+          const errorMessages = [];
+          Object.entries(error.response.data).forEach(([field, errors]) => {
+            if (Array.isArray(errors)) {
+              errorMessages.push(`${field}: ${errors.join(', ')}`);
+            } else {
+              errorMessages.push(`${field}: ${errors}`);
+            }
+          });
+          showAlert('error', errorMessages.join('; '));
+        } else {
+          showAlert('error', `Server error: ${error.response.status}`);
+        }
+      } else if (error.request) {
+        // The request was made but no response was received
+        showAlert('error', 'No response from server. Please check your connection.');
+      } else {
+        // Something happened in setting up the request
+        showAlert('error', error.message || 'Failed to update profile');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -233,10 +320,10 @@ const ProfileView = () => {
   const showAlert = (type, message) => {
     setAlert({ show: true, type, message });
     
-    // Auto hide alert after 3 seconds
+    // Auto hide alert after 5 seconds
     setTimeout(() => {
       setAlert({ show: false, type: '', message: '' });
-    }, 3000);
+    }, 5000);
   };
   
   // Start editing profile
@@ -266,23 +353,12 @@ const ProfileView = () => {
   return (
     <main className="flex-1 bg-white dark:bg-gray-800 p-6 overflow-y-auto">
       {/* Alert banner */}
-      {alert.show && (
-        <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg flex items-center space-x-3 ${
-          alert.type === 'success' 
-            ? 'bg-green-100 text-green-800 border border-green-200' 
-            : 'bg-red-100 text-red-800 border border-red-200'
-        }`}>
-          {alert.type === 'success' ? (
-            <CheckCircle className="w-5 h-5" />
-          ) : (
-            <AlertTriangle className="w-5 h-5" />
-          )}
-          <p>{alert.message}</p>
-          <button onClick={() => setAlert({ show: false, type: '', message: '' })} className="ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      <AlertMessage 
+        show={alert.show}
+        type={alert.type}
+        message={alert.message}
+        onClose={() => setAlert({ show: false, type: '', message: '' })}
+      />
       
       {isLoading && !profile.email ? (
         <div className="flex justify-center items-center h-64">
@@ -315,14 +391,24 @@ const ProfileView = () => {
                   className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-violet-600 hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500"
                   disabled={isLoading}
                 >
-                  {isLoading ? 'Saving...' : 'Save Changes'}
+                  {isLoading ? (
+                    <span className="flex items-center">
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Saving...
+                    </span>
+                  ) : 'Save Changes'}
                 </button>
               </div>
             )}
           </div>
           
+          {/* Rest of your JSX remains the same */}
           {/* User Identity Card */}
           <div className="bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 p-6 mb-6">
+            {/* Same content */}
             <div className="flex flex-col sm:flex-row items-center sm:items-start space-y-6 sm:space-y-0 sm:space-x-6">
               {/* Profile Picture */}
               <div className="relative">
@@ -377,6 +463,7 @@ const ProfileView = () => {
                         onChange={handleInputChange}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-violet-500 focus:border-violet-500 dark:bg-gray-600 dark:border-gray-500 dark:text-white"
                         placeholder="Your full name"
+                        required
                       />
                     ) : (
                       <p className="text-gray-900 dark:text-white font-medium">{profile.fullName || 'Not set'}</p>
